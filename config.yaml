@@ -3,42 +3,31 @@ datasets:
     kitti:
       root-path-sync: "datasets/KITTI/sync"
       root-path-unsync: "datasets/KITTI/extract"
-      image-width: 1800
-      image-height: 64
-      crop-factors: [0, 4] # top, left
-      fov-up: 3.
-      fov-down: -25.
-      max-depth: 80.
-      min-depth: 1.
-      inverse-depth: true
       train:
         #2011-10-03: [27, 42, 34]
-        2011-09-30: [16] # [16, 18, 20, 27, 28]
+        2011-09-30: [16, 27] # [16, 18, 20, 27, 28]
       test:
-        # 2011-09-30: [33, 34]
+        2011-09-30: [16, 27]
+        2011-09-26: [23, 39]
         2011-10-03: [27]
       validation:
         2011-09-26: [23, 39]
 
       # channesl: x, y, z, range(x,y,z), remissions)
-      mean-image: [-0.05815, 0.4165, -0.8585, 0.1029, 0.2164]
-      std-image: [10.0366, 7.4936, 0.8761, 0.0857, 0.1740]
       mean-imu: [-0.0635, 0.186, 9.7966, 0., 0.0005, 0.0082]
       std-imu: [0.8525, 0.9516, 0.3401, 0.0198, 0.02204, 0.1383]
 
-      #mean: [-0.0581, 0.4165, -0.8585, 8.2594, 0.2164]
-      #std: [10.0366, 7.4936, 0.8761, 9.5056, 0.1740]
-
 arch:
-  name: "deeplio1" # [deeplioS0, deeplioS1, DeepLIO0, DeepLIO1]
+  name: "deepio" # [deepio]
   dropout: 0.25
   feature-net:
-    name: "simple0" # [simple0, simple1]
-    pretrained: false
-    model-path: "resources/checkpoint_30_20200504_161441.tar"
+    name: "deepio1" # [deepio0, deepio1]
+    input-size: 6
+    hidden-size: [512, 512]
+    num-layers: 2
     dropout: 0.25
-    classes: ['unknown', 'object']
-    bypass: true
+    bidirectional: true
+
 
 losses:
   active: 'lwsloss'

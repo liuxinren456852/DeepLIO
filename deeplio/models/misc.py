@@ -15,18 +15,12 @@ class PostProcessSiameseData(object):
         self.device = device
 
     def process(self, data):
-        res_im_0 = []
-        res_im_1 = []
         res_imu = []
         res_gt_local = []
         res_gt_global = []
-        res_untrans_im_0 = []
-        res_untrans_im_1 = []
 
-        n_batches = len(data['images'])
+        n_batches = len(data['imus'])
         for b in range(n_batches):
-            imgs = data['images'][b]
-            img_untrans = data['untrans-images'][b]
             imus = data['imus'][b]
             gts = data['gts'][b]
 
@@ -45,12 +39,6 @@ class PostProcessSiameseData(object):
                 idx_0 = combi[0]
                 idx_1 = combi[1]
 
-                res_im_0.append(imgs[idx_0])
-                res_im_1.append(imgs[idx_1])
-
-                res_untrans_im_0.append(img_untrans[idx_0])
-                res_untrans_im_1.append(img_untrans[idx_1])
-
                 # Determining IMU measurment btw. each combination
                 max_idx = max(combi)
                 min_idx = min(combi)
@@ -62,12 +50,8 @@ class PostProcessSiameseData(object):
 
         res_gt_global = torch.stack(res_gt_global).to(self.device, non_blocking=True)
         res_gt_local = torch.stack(res_gt_local).to(self.device, non_blocking=True)
-        res_im_0 = torch.stack(res_im_0).to(self.device, non_blocking=True)
-        res_im_1 = torch.stack(res_im_1).to(self.device, non_blocking=True)
-        res_untrans_im_0 = torch.stack(res_untrans_im_0).to(self.device, non_blocking=True)
-        res_untrans_im_1 = torch.stack(res_untrans_im_1).to(self.device, non_blocking=True)
         #res_imu = [torch.stack(imu).to(self.device, non_blocking=True) for imu_seq in res_imu for imu in imu_seq]
-        return res_im_0, res_im_1, res_untrans_im_0, res_untrans_im_1, res_imu, res_gt_local, res_gt_global
+        return res_imu, res_gt_local, res_gt_global
 
     def process_ground_turth(self, gts, combinations):
         T_global = []

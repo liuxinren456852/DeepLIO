@@ -16,12 +16,11 @@ from torchvision import transforms
 from torch.utils import tensorboard
 
 from deeplio import datasets as ds
-from deeplio.losses.losses import LWSLoss, HWSLoss
+from deeplio.losses import get_loss_function
 from deeplio.common import spatial, utils
 from deeplio.models import nets
 from deeplio.models.misc import PostProcessSiameseData
 from deeplio.models.worker import Worker, AverageMeter, ProgressMeter, worker_init_fn
-from .transforms import ToTensor, Normalize, CenterCrop
 
 
 class Tester(Worker):
@@ -56,11 +55,10 @@ class Tester(Worker):
 
         self.post_processor = PostProcessSiameseData(seq_size=self.seq_size, batch_size=self.batch_size,
                                                      shuffle=False, device=self.device)
-        self.model = nets.get_model(input_shape=(self.im_height_model, self.im_width_model,
-                                                 self.n_channels), cfg=self.cfg['arch'])
+        self.model = nets.DeepIO(cfg=self.cfg['arch'])
         self.model.to(self.device)
 
-        self.criterion = LWSLoss()
+        self.criterion = get_loss_function(self.cfg, args.device)
 
         self.tensor_writer = tensorboard.SummaryWriter(log_dir=self.runs_dir)
 
@@ -88,6 +86,7 @@ class Tester(Worker):
 
         self.logger.print(yaml.dump(self.cfg))
         self.logger.print(self.test_dataset)
+        self.logger.print("Model: {}".format(self.model.name))
 
     def run(self):
         self.is_running = True
@@ -127,14 +126,14 @@ class Tester(Worker):
                     return 0
 
                     # prepare data
-                imgs_0, imgs_1, imgs_untrans_0, imgs_untrans_1, imus, gts_local, gts_global = self.post_processor(data)
+                imus, gts_local, gts_global = self.post_processor(data)
 
                 # prepare ground truth tranlational and rotational part
                 gt_local_x = gts_local[:, :, 0:3].view(-1, 3)
                 gt_local_q = gts_local[:, :, 3:7].view(-1, 4)
 
                 # compute model predictions and loss
-                pred_x, pred_q, mask0, mask1 = model([imgs_0, imgs_1])
+                pred_x, pred_q = model(imus)
 
                 pred_q_norm = spatial.normalize_quaternion(pred_q)
                 pred_axis_angle = spatial.quaternion_to_angle_axis(pred_q_norm)
@@ -146,8 +145,10 @@ class Tester(Worker):
                 # rotation
                 if self.args.param == 'xq':
                     loss = criterion(pred_x, pred_q, gt_local_x, gt_local_q)
-                else:
+                elif self.args.param == 'x':
                     loss = criterion(pred_x, gt_local_q, gt_local_x, gt_local_q)
+                elif self.args.param == 'q':
+                    loss = criterion(gt_local_x, pred_q, gt_local_x, gt_local_q)
 
                 # measure accuracy and record loss
                 losses.update(loss.detach().item(), len(pred_x))
@@ -196,9 +197,14 @@ class Tester(Worker):
 
                 # rotation
                 if self.args.param == 'xq':
+                    T_local[:3, 3] = pred_x.numpy()
                     T_local[:3, :3] = spatial.quaternion_to_rotation_matrix(pred_q).numpy()
-                else:
+                elif self.args.param == 'x':
+                    T_local[:3, 3] = pred_x.numpy()
                     T_local[:3, :3] = spatial.quaternion_to_rotation_matrix(gt_q).numpy()
+                elif self.args.param == 'q':
+                    T_local[:3, 3] = gt_x.numpy()
+                    T_local[:3, :3] = spatial.quaternion_to_rotation_matrix(pred_q).numpy()
 
                 curr_seq.add_local_prediction(velo_ts[1], losses.avg, T_local, T_glob)
 

@@ -21,7 +21,6 @@ from deeplio.common import spatial, utils
 from deeplio.models import nets
 from deeplio.models.misc import PostProcessSiameseData
 from deeplio.models.worker import Worker, AverageMeter, ProgressMeter, worker_init_fn
-from .transforms import ToTensor, Normalize, CenterCrop
 from .optimizer import create_optimizer
 
 
@@ -66,8 +65,7 @@ class Trainer(Worker):
         self.post_processor = PostProcessSiameseData(seq_size=self.seq_size, batch_size=self.batch_size,
                                                      shuffle=True, device=self.device)
 
-        self.model = nets.get_model(input_shape=(self.im_height_model, self.im_width_model,
-                                                 self.n_channels), cfg=self.cfg['arch'])
+        self.model = nets.DeepIO(cfg=self.cfg['arch'])
         self.model.to(self.device) #should be before creating optimizer
 
         self.optimizer = create_optimizer(self.model.parameters(), self.cfg, args)
@@ -75,7 +73,7 @@ class Trainer(Worker):
         self.criterion = get_loss_function(self.cfg, args.device)
 
         # debugging and visualizing
-        self.logger.print("DeepLIO Training Configurations:")
+        self.logger.print("DeepIO Training Configurations:")
         self.logger.print("args: {}".
                           format(self.args))
 
@@ -102,6 +100,7 @@ class Trainer(Worker):
         self.logger.print(yaml.dump(self.cfg))
         self.logger.print(self.train_dataset)
         self.logger.print(self.val_dataset)
+        self.logger.print("Model: {}".format(self.model.name))
 
         # log the network structure and number of params
         #imgs = torch.randn((2, 3, self.n_channels, self.im_height_model, self.im_width_model)).to(self.device)
@@ -179,14 +178,14 @@ class Trainer(Worker):
             data_time.update(time.time() - end)
 
             # prepare data
-            imgs_0, imgs_1,  imgs_untrans_0, imgs_untrans_1, imus, gts_local, gts_global = self.post_processor(data)
+            imus, gts_local, gts_global = self.post_processor(data)
 
             # prepare ground truth tranlational and rotational part
             gt_local_x = gts_local[:, :, 0:3].view(-1, 3)
             gt_local_q = gts_local[:, :, 3:7].view(-1, 4)
 
             # compute model predictions and loss
-            pred_x, pred_q, mask0, mask1 = model([imgs_0, imgs_1, imus])
+            pred_x, pred_q = model(imus)
             loss = criterion(pred_x, pred_q, gt_local_x, gt_local_q)
 
             # measure accuracy and record loss
@@ -203,24 +202,6 @@ class Trainer(Worker):
             end = time.time()
 
             if idx % self.args.print_freq == 0:
-
-                if idx % (5 * self.args.print_freq) == 0:
-                    # print some prediction results
-                    x = pred_x[0:2].detach().cpu().flatten()
-                    q = spatial.normalize_quaternion(pred_q[0:2].detach().cpu()).flatten()
-                    x_gt = gt_local_x[0:2].detach().cpu().flatten()
-                    q_gt = gt_local_q[0:2].detach().cpu().flatten()
-
-                    self.logger.print("x-hat: [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]"
-                                      "\nx-gt:  [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]".
-                                      format(x[0], x[1], x[2], x[3], x[4], x[5],
-                                             x_gt[0], x_gt[2], x_gt[2], x_gt[3], x_gt[4], x_gt[5]))
-
-                    self.logger.print("q-hat: [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]"
-                                      "\nq-gt:  [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]".
-                                      format(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7],
-                                             q_gt[0], q_gt[1], q_gt[2], q_gt[3], q_gt[4],q_gt[5], q_gt[6], q_gt[7]))
-
                 progress.display(idx)
 
                 ### update tensorboard
@@ -228,22 +209,22 @@ class Trainer(Worker):
                 self.tensor_writer.add_scalar("Train/Loss", losses.avg, step_val)
                 self.tensor_writer.add_scalar("Train/Gradnorm", calc_grad_norm(self.model.parameters()), step_val)
                 self.tensor_writer.flush()
-            data_last = data
 
-        # save infos to -e.g. gradient hists and images to tensorbaord and the end of training
-        b, s, c, h, w = np.asarray(data_last['images'].shape)
-        imgs = data_last['images'].reshape(b*s, c, h, w)
-        imgs_remossion = imgs[:, 1, :, :]
-        imgs_remossion = [torch.from_numpy(utils.colorize(img)).permute(2, 0, 1) for img in imgs_remossion]
-        imgs_remossion = torch.stack(imgs_remossion)
-        imgs_remossion = make_grid(imgs_remossion, nrow=2)
-        self.tensor_writer.add_image("Images/Remissions", imgs_remossion, global_step=step_val)
+                # print some prediction results
+                x = pred_x[0:2].detach().cpu().flatten()
+                q = spatial.normalize_quaternion(pred_q[0:2].detach().cpu()).flatten()
+                x_gt = gt_local_x[0:2].detach().cpu().flatten()
+                q_gt = gt_local_q[0:2].detach().cpu().flatten()
 
-        imgs_range = imgs[:, 0, :, :]
-        imgs_range = [torch.from_numpy(utils.colorize(img, cmap='viridis')).permute(2, 0, 1) for img in imgs_range]
-        imgs_range = torch.stack(imgs_range)
-        imgs_range = make_grid(imgs_range, nrow=2)
-        self.tensor_writer.add_image("Images/Range", imgs_range, global_step=step_val)
+                self.logger.print("x-hat: [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]"
+                                  "\nx-gt:  [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]".
+                                  format(x[0], x[1], x[2], x[3], x[4], x[5],
+                                         x_gt[0], x_gt[2], x_gt[2], x_gt[3], x_gt[4], x_gt[5]))
+
+                self.logger.print("q-hat: [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]"
+                                  "\nq-gt:  [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]".
+                                  format(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7],
+                                         q_gt[0], q_gt[1], q_gt[2], q_gt[3], q_gt[4],q_gt[5], q_gt[6], q_gt[7]))
 
         for tag, param in self.model.named_parameters():
             self.tensor_writer.add_histogram(tag, param.data.detach().cpu().numpy(), step_val)
@@ -273,14 +254,14 @@ class Trainer(Worker):
                     return 0
 
                     # prepare data
-                imgs_0, imgs_1, imgs_untrans_0, imgs_untrans_1, imus, gts_local, gts_global = self.post_processor(data)
+                imus, gts_local, gts_global = self.post_processor(data)
 
                 # prepare ground truth tranlational and rotational part
                 gt_local_x = gts_local[:, :, 0:3].view(-1, 3)
                 gt_local_q = gts_local[:, :, 3:7].view(-1, 4)
 
                 # compute model predictions and loss
-                pred_x, pred_q, mask0, mask1 = model([imgs_0, imgs_1])
+                pred_x, pred_q = model(imus)
                 loss = criterion(pred_x, pred_q, gt_local_x, gt_local_q)
 
                 # measure accuracy and record loss

@@ -213,10 +213,10 @@ class Kitti(data.Dataset):
         ds_config = ds_config_common['kitti']
         self.seq_size = ds_config_common['sequence-size']
         self.inv_depth = ds_config.get('inverse-depth', False)
-        self.mean_img = ds_config['mean-image']
-        self.std_img = ds_config['std-image']
-        self.mean_imu = ds_config['mean-imu']
-        self.std_imu = ds_config['std-imu']
+        self.mean_img = ds_config.get('mean-image', [0.]*6)
+        self.std_img =ds_config.get('std-image', [1.]*6)
+        self.mean_imu = ds_config.get('mean-imu', [0.]*6)
+        self.std_imu = ds_config.get('std-imu', [1.]*6)
         self.channels = config['channels']
 
         crop_factors = ds_config.get('crop-factors', [0, 0])
@@ -370,8 +370,8 @@ class Kitti(data.Dataset):
         velo_timespamps = [dataset.timestamps_velo[idx] for idx in indices]
 
         # load and transform images
-        self.load_images(dataset, indices)
-        org_images, proc_images = self.transform_images()
+        # self.load_images(dataset, indices)
+        # org_images, proc_images = self.transform_images()
 
         # load and transform imus
         imus = self.load_imus(dataset, velo_timespamps)
@@ -383,7 +383,7 @@ class Kitti(data.Dataset):
         meta_data = {'index': [index], 'date': [dataset.date], 'drive': [dataset.drive], 'velo-index': [indices],
                      'velo-timestamps': [ts.timestamp() for ts in velo_timespamps]}
 
-        data = {'images': proc_images, 'imus': imus, 'gts': gts, 'meta': meta_data, 'untrans-images': org_images}
+        data = {'imus': imus, 'gts': gts, 'meta': meta_data}
 
         end = time.time()
 

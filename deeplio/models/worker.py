@@ -54,14 +54,6 @@ class Worker:
 
         self.device = args.device
 
-        # get input images shape and channels
-        crop_height, crop_width = self.curr_dataset_cfg.get('crop-factors', [0, 0])
-        self.im_height, self.im_width = self.curr_dataset_cfg['image-height'], self.curr_dataset_cfg['image-width']
-        self.im_height_model = self.im_height - (2 * crop_height)
-        self.im_width_model = self.im_width - (2 * crop_width)
-
-        self.n_channels = len(self.cfg['channels'])
-        
         # create output folder structure
         self.out_dir = "{}/outputs/{}_{}".format(self.content_dir, self.ACTION, datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
 
@@ -90,7 +82,7 @@ class Worker:
         raise NotImplementedError()
 
     def close(self):
-        self.logger.info("Stopping training ({})!".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+        self.logger.info("Stopping ({})!".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
         self.is_running = False
 
         # give some times to porcesses and loops to finish
@@ -99,7 +91,6 @@ class Worker:
 
         if self.tensor_writer:
             self.tensor_writer.close()
-
 
 
 class AverageMeter(object):

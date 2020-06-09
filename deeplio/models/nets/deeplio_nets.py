@@ -1,364 +1,108 @@
-import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base_net import BaseNet, eval_output_size_detection, num_flat_features
-from .modules import Fire, SELayer
-from .pointseg_net import PointSegNet
 
+class DeepIO(nn.Module):
+    def __init__(self, cfg):
+        super(DeepIO, self).__init__()
 
-class DeepLIONBase(BaseNet):
-    """Base class for all DepplioN Networks"""
-    def __init__(self, input_shape, cfg, bn_d=0.1):
-        super(DeepLIONBase, self).__init__(input_shape, cfg)
-        self.bn_d = bn_d
-        # Siamese sqeeuze feature extraction networks
-        feat_cfg = cfg['feature-net']
-        self.feat_net = PointSegNet(input_shape, feat_cfg)
-        if feat_cfg['pretrained']:
-            ckp_path = feat_cfg['model-path']
-            if os.path.isfile(ckp_path):
-                print("loading pointseg checkpoint {}".format(ckp_path))
-                checkpoint = torch.load(ckp_path)
-                self.feat_net.load_state_dict(checkpoint['state_dict'])
+        self.p = cfg.get('dropout', 0.)
+        feat_net_cfg = cfg['feature-net']
+        self.feat_net_type = feat_net_cfg.get('name', 'deepio0').lower()
 
-    def get_feature_channel_size(self):
-        # Output size detection of feature extraction layer
+        if self.feat_net_type == 'deepio0':
+            self.feat_net = DeepIOFeat0(feat_net_cfg)
+        elif self.feat_net_type == 'deepio1':
+            self.feat_net = DeepIOFeat1(feat_net_cfg)
+
+        if self.p > 0.:
+            self.drop_out = nn.Dropout(self.p)
+
+        # get featurenet output shape
+        data = torch.rand((1, 2, 2, self.feat_net.input_size))
         self.feat_net.eval()
         with torch.no_grad():
-            x = torch.randn((1, self.c, self.h, self.w))
-            x_feat = self.feat_net(x)[1]
-            _, feat_out_c, feat_out_h, feat_out_w = x_feat.shape
+            out = self.feat_net(data)
+        n_feat_out = out.shape[-1]
 
-        # odometry network
-        self.fire12 = nn.Sequential(Fire(2*feat_out_c, 64, 256, 256, bn=True, bn_d=self.bn_d),
-                                    Fire(512, 64, 256, 256, bn=True, bn_d=self.bn_d),
-                                    SELayer(512, reduction=2),
-                                    nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1)))
-
-        self.fire34 = nn.Sequential(Fire(512, 80, 384, 384, bn=True, bn_d=self.bn_d),
-                                    Fire(768, 80, 384, 384, bn=True, bn_d=self.bn_d),
-                                    #nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1)),
-                                    nn.AdaptiveAvgPool2d((1, 1)))
-
-        # output middle fire conv-layers
-        x = torch.rand((1, 2*feat_out_c, feat_out_h, feat_out_w))
-        self.eval()
-        with torch.no_grad():
-            x = self.fire12(x)
-            x = self.fire34(x)
-            x = x.view(-1, num_flat_features(x))
-        _, c = x.shape
-        return c
-
-
-class DeepLIO0(DeepLIONBase):
-    """
-    DeepLIO with Simple Siamese SqueezeNet
-    """
-    def __init__(self, input_shape, cfg, bn_d=0.1):
-        super(DeepLIO0, self).__init__(input_shape, cfg)
-
-        mid_c = self.get_feature_channel_size()
-        self.fc1 = nn.Linear(mid_c, 512)
-
-        if self.p > 0:
-            self.dropout = nn.Dropout2d(p=self.p)
-
-        self.fc_pos = nn.Linear(512, 3)
-        self.fc_ori = nn.Linear(512, 4)
+        self.fc1 = nn.Linear(n_feat_out, 256)
+        self.bn1 = nn.BatchNorm1d(256)
+        self.fc_pos = nn.Linear(256, 3)
+        self.fc_ori = nn.Linear(256, 4)
 
     def forward(self, x):
-        x0 = x[0]
-        x1 = x[1]
+        x = self.feat_net(x)
 
-        x0_mask, x0_feat = self.feat_net(x0)
-        x1_mask, x1_feat = self.feat_net(x1)
-
-        x = torch.cat((x0_feat, x1_feat), dim=1)
-        x = self.fire12(x)
-        x = self.fire34(x)
-
-        x = x.view(-1, num_flat_features(x))
-        x = self.fc1(x)
-
-        if self.p > 0:
-            x = self.dropout(x)
+        x = F.relu(self.fc1(x), inplace=True)
+        x = self.bn1(x)
+        if self.p > 0.:
+            x = self.drop_out(x)
 
         x_pos = self.fc_pos(x)
         x_ori = self.fc_ori(x)
+        return x_pos, x_ori
 
-        return x_pos, x_ori, x0_mask, x1_mask
+    @property
+    def name(self):
+        res = "{}_{}".format(self.__class__.__name__, self.feat_net.__class__.__name__)
+        return res
 
 
-class DeepLIO1(DeepLIONBase):
-    """
-    DeepLIO with Simple Siamese SqueezeNet
-    """
-    def __init__(self, input_shape, cfg, bn_d=0.1):
-        super(DeepLIO1, self).__init__(input_shape, cfg)
+class DeepIOFeat0(nn.Module):
+    def __init__(self, cfg):
+        super(DeepIOFeat0, self).__init__()
 
-        self.rnn_hidden_size = 6
-        self.rnn_num_layers = 1
-        self.bidrectional = False
+        self.input_size = cfg['input-size']
+        hidden_size = cfg.get('hidden-size', [6, 6])
+        num_layers = cfg.get('num-layers', 2)
 
-        self.rnn_imu = nn.LSTM(input_size=6, hidden_size=self.rnn_hidden_size, num_layers=self.rnn_num_layers,
-                               batch_first=True, bidirectional=self.bidrectional)
-
-        mid_c = self.get_feature_channel_size()
-        self.fc1 = nn.Linear(mid_c + self.rnn_hidden_size, 512)
-
-        if self.p > 0:
-            self.dropout = nn.Dropout2d(p=self.p)
-
-        self.fc_pos = nn.Linear(512, 3)
-        self.fc_ori = nn.Linear(512, 4)
+        layers = []
+        layers.append(nn.Linear(self.input_size, hidden_size[0]))
+        for i in range(1, num_layers):
+            l = nn.Linear(hidden_size[i-1], hidden_size[i])
+            layers.append(l)
+        self.net = nn.ModuleList(layers)
 
     def forward(self, x):
-        ims0 = x[0]
-        ims1 = x[1]
-        imus = x[2]
+        n_batches = len(x)
+        n_seq = len(x[0]) # all seq. are the same length
 
-        n_batches, n_seq = len(imus), len(imus[0])
-        x_imu = []
+        outputs = []
         for b in range(n_batches):
             for s in range(n_seq):
-                imu = imus[b][s]
-                out, hidden = self.rnn_imu(imu.unsqueeze(0))
-                x_imu.append(out[0, -1, :])
-
-        x_imu = torch.stack(x_imu)
-
-        x0_mask, x0_feat = self.feat_net(ims0)
-        x1_mask, x1_feat = self.feat_net(ims1)
-
-        x_feat = torch.cat((x0_feat, x1_feat), dim=1)
-        x_feat = self.fire12(x_feat)
-        x_feat = self.fire34(x_feat)
-
-        x_feat = x_feat.view(-1, num_flat_features(x_feat))
-        x = torch.cat((x_feat, x_imu), dim=1)
-        x = self.fc1(x)
-
-        if self.p > 0:
-            x = self.dropout(x)
-
-        x_pos = self.fc_pos(x)
-        x_ori = self.fc_ori(x)
-
-        return x_pos, x_ori, x0_mask, x1_mask
+                y = x[b][s]
+                for m in self.net:
+                    y = F.relu(m(y))
+                outputs.append(torch.sum(y, dim=0))
+        outputs = torch.stack(outputs)
+        return outputs
 
 
-class FeatureNetSimple0(BaseNet):
-    def __init__(self, input_shape, cfg):
-        super(FeatureNetSimple0, self).__init__(input_shape, cfg)
+class DeepIOFeat1(nn.Module):
+    def __init__(self, cfg):
+        super(DeepIOFeat1, self).__init__()
+        self.input_size = cfg['input-size']
+        self.hidden_size = cfg.get('hidden-size', [6, 6])
+        num_layers = cfg.get('num-layers', 2)
+        self.bidirectional = cfg.get('bidirectional', False)
 
-        self.conv1 = nn.Conv2d(self.c, out_channels=32, kernel_size=3, stride=(1, 2), padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
+        self.rnn = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size[0],
+                           num_layers=num_layers, batch_first=True, bidirectional=self.bidirectional)
 
-        self.conv2 = nn.Conv2d(32, out_channels=32, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv3 = nn.Conv2d(32, out_channels=64, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.pool3 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv4 = nn.Conv2d(64, out_channels=64, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn4 = nn.BatchNorm2d(64)
-        self.pool4 = nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv5 = nn.Conv2d(64, out_channels=64, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn5 = nn.BatchNorm2d(64)
-        self.pool5 = nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1), ceil_mode=True)
+        self.num_dir = 2 if self.bidirectional else 1
 
     def forward(self, x):
-        out = F.relu(self.conv1(x))
-        out = self.bn1(out)
-        out = self.pool1(out)
+        x_all = [xx for x_ in x for xx in x_]
+        lengths = [x_.size(0) for x_ in x_all]
+        x_padded = nn.utils.rnn.pad_sequence(x_all, batch_first=True)
+        b, s, n = x_padded.shape
 
-        out = F.relu(self.conv2(out))
-        out = self.bn2(out)
-        out = self.pool2(out)
-
-        out = F.relu(self.conv3(out))
-        out = self.bn3(out)
-        out = self.pool3(out)
-
-        out = F.relu(self.conv4(out))
-        out = self.bn4(out)
-        out = self.pool4(out)
-
-        out = F.relu(self.conv5(out))
-        out = self.bn5(out)
-        out = self.pool5(out)
+        x_padded = nn.utils.rnn.pack_padded_sequence(x_padded, lengths=lengths, batch_first=True, enforce_sorted=False)
+        out, hidden = self.rnn(x_padded)
+        out, lens_unpacked = nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        out = out.view(b, s, self.num_dir, self.hidden_size[0])
+        out = out[:, -1, 0]
         return out
 
-
-class FeatureNetSimple1(BaseNet):
-    def __init__(self, input_shape, cfg):
-        super(FeatureNetSimple1, self).__init__(input_shape, cfg)
-
-        self.bypass = self.cfg.get('bypass', False)
-
-        self.conv1 = nn.Conv2d(self.c, out_channels=32, kernel_size=3, stride=(1, 2), padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv2 = nn.Conv2d(32, out_channels=32, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv3 = nn.Conv2d(32, out_channels=64, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-
-        self.conv4 = nn.Conv2d(64, out_channels=64, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn4 = nn.BatchNorm2d(64)
-        self.pool4 = nn.MaxPool2d(kernel_size=3, stride=(1, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv5 = nn.Conv2d(64, out_channels=128, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn5 = nn.BatchNorm2d(128)
-
-        self.conv6 = nn.Conv2d(128, out_channels=128, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn6 = nn.BatchNorm2d(128)
-        self.pool6 = nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1), ceil_mode=True)
-
-        self.conv7 = nn.Conv2d(128, out_channels=128, kernel_size=3, stride=(1, 1), padding=1)
-        self.bn7 = nn.BatchNorm2d(128)
-        self.pool7 = nn.MaxPool2d(kernel_size=3, stride=(2, 2), padding=(1, 1), ceil_mode=True)
-
-    def forward(self, x):
-        # 1. block
-        out = F.relu(self.conv1(x), inplace=True)
-        out = self.bn1(out)
-        out = self.pool1(out)
-
-        # 2. block
-        out = F.relu(self.conv2(out), inplace=True)
-        out = self.bn2(out)
-        out = self.pool2(out)
-
-        # 3. block
-        out = F.relu(self.conv3(out), inplace=True)
-        out = self.bn3(out)
-        identitiy = out
-
-        out = F.relu(self.conv4(out), inplace=True)
-        out = self.bn4(out)
-        if self.bypass:
-            out += identitiy
-        out = self.pool4(out)
-
-        # 4. block
-        out = F.relu(self.conv5(out), inplace=True)
-        out = self.bn5(out)
-        identitiy = out
-
-        out = F.relu(self.conv6(out), inplace=True)
-        out = self.bn6(out)
-        if self.bypass:
-            out += identitiy
-        out = self.pool6(out)
-
-        out = F.relu(self.conv7(out), inplace=True)
-        out = self.bn7(out)
-        out = self.pool7(out)
-        return out
-
-
-class DeepLIOS0N(BaseNet):
-    """
-        DeepLIO with simple siamese conv layers
-        """
-    def __init__(self, input_shape, cfg):
-        super(DeepLIOS0N, self).__init__(input_shape, cfg)
-
-    def create_network(self):
-        cfg = self.cfg['feature-net']
-        net_name = cfg.get('name', 'simple0')
-        if net_name == 'simple0':
-            self.feature_net = FeatureNetSimple0((self.h, self.w, self.c), cfg)
-        elif net_name == 'simple1':
-            self.feature_net = FeatureNetSimple1((self.h, self.w, self.c), cfg)
-        else:
-            raise ValueError("Featurenetwok {} is not supported!".format(net_name))
-
-        # in-feature size autodetection
-        self.feature_net.eval()
-        with torch.no_grad():
-            x = torch.randn((1, self.c, self.h, self.w))
-            x = self.feature_net(x)
-            _, c, h, w = x.shape
-            self.fc_in_shape = (c, h, w)
-
-        self.fc1 = nn.Linear(2*c*h*w, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 128)
-
-        if self.p > 0:
-            self.dropout = nn.Dropout2d(p=self.p)
-
-        self.fc_pos = nn.Linear(128, 3)
-        self.fc_ori = nn.Linear(128, 4)
-
-    def forward(self, x):
-        out = self.forward_feat_net(x)
-
-        out = F.relu(self.fc1(out))
-        out = F.relu(self.fc2(out))
-        out = F.relu(self.fc3(out))
-
-        if self.p > 0:
-            out = self.dropout(out)
-
-        pos = self.fc_pos(out)
-        ori = self.fc_ori(out)
-        return pos, ori, None, None
-
-    def forward_feat_net(self, x):
-        raise NotImplementedError()
-
-
-class DeepLIOS0(DeepLIOS0N):
-    """
-    DeepLIO with simple siamese conv layers
-    """
-    def __init__(self, input_shape, cfg):
-        super(DeepLIOS0, self).__init__(input_shape, cfg)
-        self.create_network()
-
-    def forward_feat_net(self, x):
-        images = x
-
-        imgs_0 = images[0]
-        imgs_1 = images[1]
-
-        out_0 = self.feature_net(imgs_0)
-        out_1 = self.feature_net(imgs_1)
-        out = torch.cat((out_1, out_0), dim=1) #  torch.sub(out_1, out_0) #
-        out = out.view(-1, num_flat_features(out))
-        return out
-
-
-class DeepLIOS1(DeepLIOS0N):
-    """
-    DeepLIO with simple siamese conv layers
-    """
-    def __init__(self, input_shape, cfg):
-        super(DeepLIOS1, self).__init__(input_shape, cfg)
-
-        self.c *= 2
-        self.create_network()
-
-    def forward_feat_net(self, x):
-        images = x
-        imgs0 = images[0]
-        imgs1 = images[1]
-        imgs = torch.stack(list(map(torch.cat, zip(imgs0, imgs1))))
-
-        out = self.feature_net(imgs)
-        out = out.view(-1, num_flat_features(out))
-        return out
