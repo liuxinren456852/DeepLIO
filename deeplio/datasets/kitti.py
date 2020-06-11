@@ -289,6 +289,7 @@ class Kitti(data.Dataset):
 
     def load_imus(self, dataset, velo_timestamps):
         imus = []
+        valid = False
         for i in range(self.seq_size - 1):
             velo_start_ts = velo_timestamps[i]
             velo_stop_ts = velo_timestamps[i+1]
@@ -306,8 +307,9 @@ class Kitti(data.Dataset):
                 imu_values = np.array([[oxt[0].ax, oxt[0].ay, oxt[0].az,
                                         oxt[0].wx, oxt[0].wy, oxt[0].wz]
                                        for oxt in oxts], dtype=np.float)
+                valid = True
             imus.append(imu_values)
-        return imus
+        return imus, valid
 
     def transform_images(self):
         imgs_org = torch.stack([torch.from_numpy(im.transpose(2, 0, 1)) for im in self.images])
@@ -374,7 +376,7 @@ class Kitti(data.Dataset):
         # org_images, proc_images = self.transform_images()
 
         # load and transform imus
-        imus = self.load_imus(dataset, velo_timespamps)
+        imus, valid = self.load_imus(dataset, velo_timespamps)
         imus = self.transform_imus(imus)
 
         # load and transform ground truth
@@ -383,7 +385,7 @@ class Kitti(data.Dataset):
         meta_data = {'index': [index], 'date': [dataset.date], 'drive': [dataset.drive], 'velo-index': [indices],
                      'velo-timestamps': [ts.timestamp() for ts in velo_timespamps]}
 
-        data = {'imus': imus, 'gts': gts, 'meta': meta_data}
+        data = {'imus': imus, 'gts': gts, 'meta': meta_data, 'valid': valid}
 
         end = time.time()
 

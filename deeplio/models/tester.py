@@ -149,6 +149,8 @@ class Tester(Worker):
                     loss = criterion(pred_x, gt_local_q, gt_local_x, gt_local_q)
                 elif self.args.param == 'q':
                     loss = criterion(gt_local_x, pred_q, gt_local_x, gt_local_q)
+                else:
+                    loss = criterion(gt_local_x, gt_local_q, gt_local_x, gt_local_q)
 
                 # measure accuracy and record loss
                 losses.update(loss.detach().item(), len(pred_x))
@@ -205,6 +207,9 @@ class Tester(Worker):
                 elif self.args.param == 'q':
                     T_local[:3, 3] = gt_x.numpy()
                     T_local[:3, :3] = spatial.quaternion_to_rotation_matrix(pred_q).numpy()
+                else:
+                    T_local[:3, 3] = gt_x.numpy()
+                    T_local[:3, :3] = spatial.quaternion_to_rotation_matrix(gt_q).numpy()
 
                 curr_seq.add_local_prediction(velo_ts[1], losses.avg, T_local, T_glob)
 
@@ -269,10 +274,10 @@ class OdomSeqRes:
         plt.figure()
 
         plt.plot(self.T_global[:, 0, 3], self.T_global[:, 1, 3], alpha=0.5, linewidth=1, label="GT")
-        plt.scatter(self.T_global[:, 0, 3], self.T_global[:, 1, 3], alpha=0.7, s=0.5)
+        plt.scatter(self.T_global[:, 0, 3], self.T_global[:, 1, 3], alpha=0.7, s=2)
 
-        plt.plot(T_glob_pred[:, 0, 3], T_glob_pred[:, 1, 3], alpha=0.5, linewidth=1, label="DeepLIO")
-        plt.scatter(T_glob_pred[:, 0, 3], T_glob_pred[:, 1, 3], alpha=0.7, s=0.5)
+        plt.plot(T_glob_pred[:, 0, 3], T_glob_pred[:, 1, 3], alpha=0.5, linewidth=0.5, label="DeepLIO")
+        plt.scatter(T_glob_pred[:, 0, 3], T_glob_pred[:, 1, 3], alpha=0.7, s=1)
 
         plt.xlabel('x [m]')
         plt.ylabel('y [m]')

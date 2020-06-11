@@ -58,7 +58,7 @@ class Trainer(Worker):
         self.val_dataset = ds.Kitti(config=self.cfg, transform=transform, ds_type='validation')
         self.val_dataloader = torch.utils.data.DataLoader(self.val_dataset, batch_size=self.batch_size,
                                                           num_workers=self.num_workers,
-                                                          shuffle=False,
+                                                          shuffle=True,
                                                           worker_init_fn=worker_init_fn,
                                                           collate_fn = ds.deeplio_collate)
 
@@ -103,9 +103,9 @@ class Trainer(Worker):
         self.logger.print("Model: {}".format(self.model.name))
 
         # log the network structure and number of params
-        #imgs = torch.randn((2, 3, self.n_channels, self.im_height_model, self.im_width_model)).to(self.device)
-        #self.model.eval()
-        #self.logger.print(summary(self.model, imgs))
+        imu = torch.rand((1, 2, 2, 6)).to(self.device)
+        self.model.eval()
+        self.logger.print(summary(self.model, imu))
         #self.tensor_writer.add_graph(self.model, imgs)
 
     def run(self):
@@ -174,6 +174,9 @@ class Trainer(Worker):
             if not self.is_running:
                 break
 
+            if not np.all(data['valid']):
+                continue
+
             # measure data loading time
             data_time.update(time.time() - end)
 
@@ -195,6 +198,7 @@ class Trainer(Worker):
             # zero the parameter gradients, compute gradient and optimizer step
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10.)
             optimizer.step()
 
             # measure elapsed time
@@ -216,15 +220,16 @@ class Trainer(Worker):
                 x_gt = gt_local_x[0:2].detach().cpu().flatten()
                 q_gt = gt_local_q[0:2].detach().cpu().flatten()
 
-                self.logger.print("x-hat: [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]"
-                                  "\nx-gt:  [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]".
-                                  format(x[0], x[1], x[2], x[3], x[4], x[5],
-                                         x_gt[0], x_gt[2], x_gt[2], x_gt[3], x_gt[4], x_gt[5]))
+                if idx % (5*self.args.print_freq) == 0:
+                    self.logger.print("x-hat: [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]"
+                                      "\nx-gt:  [{:.4f},{:.4f},{:.4f}], [{:.4f},{:.4f},{:.4f}]".
+                                      format(x[0], x[1], x[2], x[3], x[4], x[5],
+                                             x_gt[0], x_gt[2], x_gt[2], x_gt[3], x_gt[4], x_gt[5]))
 
-                self.logger.print("q-hat: [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]"
-                                  "\nq-gt:  [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]".
-                                  format(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7],
-                                         q_gt[0], q_gt[1], q_gt[2], q_gt[3], q_gt[4],q_gt[5], q_gt[6], q_gt[7]))
+                    self.logger.print("q-hat: [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]"
+                                      "\nq-gt:  [{:.4f},{:.4f},{:.4f},{:.4}], [{:.4f},{:.4f},{:.4f},{:.4}]".
+                                      format(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7],
+                                             q_gt[0], q_gt[1], q_gt[2], q_gt[3], q_gt[4],q_gt[5], q_gt[6], q_gt[7]))
 
         for tag, param in self.model.named_parameters():
             self.tensor_writer.add_histogram(tag, param.data.detach().cpu().numpy(), step_val)

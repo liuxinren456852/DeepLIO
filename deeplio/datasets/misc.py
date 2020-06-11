@@ -11,10 +11,12 @@ def deeplio_collate(batch):
 
     # also vladiation field and meta-datas need not to be changed
     metas = [b['meta'] for b in batch]
+    valid = [b['valid'] for b in batch]
 
     res ={}
     res['imus'] = imus
     res['gts'] = gts
     res['metas'] = metas
+    res['valid'] = valid
     return res
 
