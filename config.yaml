@@ -1,17 +1,19 @@
 datasets:
-    sequence-size: 3 # must be >= 2
+    sequence-size: 2 # must be >= 2
     kitti:
       root-path-sync: "datasets/KITTI/sync"
       root-path-unsync: "datasets/KITTI/extract"
       train:
         #2011-10-03: [27, 42, 34]
         2011-09-30: [16, 27] # [16, 18, 20, 27, 28]
+        2011-10-03: [27]
       test:
-        2011-09-30: [16, 27]
+        2011-09-30: [16, 27, 20, 18]
         2011-09-26: [23, 39]
         2011-10-03: [27]
       validation:
-        2011-09-26: [23, 39]
+        #2011-09-26: [23, 39]
+        2011-09-30: [18, 20]
 
       # channesl: x, y, z, range(x,y,z), remissions)
       mean-imu: [-0.0635, 0.186, 9.7966, 0., 0.0005, 0.0082]
@@ -23,9 +25,8 @@ arch:
   feature-net:
     name: "deepio1" # [deepio0, deepio1]
     input-size: 6
-    hidden-size: [512, 512]
+    hidden-size: [256, 256]
     num-layers: 2
-    dropout: 0.25
     bidirectional: true
 
 
